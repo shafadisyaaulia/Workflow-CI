@@ -26,7 +26,10 @@ from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score,
     roc_auc_score, confusion_matrix, ConfusionMatrixDisplay, classification_report,
 )
-from sklearn import estimator_html_repr
+try:
+    from sklearn.utils import estimator_html_repr
+except ImportError:
+    from sklearn import estimator_html_repr
 
 warnings.filterwarnings("ignore")
 
