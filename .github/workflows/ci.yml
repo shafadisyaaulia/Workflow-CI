@@ -1,0 +1,136 @@
+name: CI - MLflow Training Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      n_estimators:
+        description: "Jumlah estimator"
+        required: false
+        default: "100"
+      max_depth:
+        description: "Max depth"
+        required: false
+        default: "10"
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    name: Train Model & Build Docker
+
+    steps:
+      # ── Setup ────────────────────────────────────────────────
+      - name: Set up job
+        run: echo "Starting CI pipeline for Credit Scoring ML"
+
+      - name: Run actions/checkout@v3
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.12.7
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12.7"
+
+      - name: Check Env
+        run: |
+          python --version
+          pip --version
+          echo "Runner OS: ${{ runner.os }}"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mlflow==2.19.0 scikit-learn==1.5.2 pandas numpy matplotlib
+
+      - name: Set MLflow Tracking URI
+        run: echo "MLFLOW_TRACKING_URI=./mlruns" >> $GITHUB_ENV
+
+      - name: Run mlflow project
+        run: |
+          cd MLProject
+          mlflow run . \
+            --env-manager=local \
+            -P n_estimators=${{ github.event.inputs.n_estimators || '100' }} \
+            -P max_depth=${{ github.event.inputs.max_depth || '10' }} \
+            -P data_dir=../credit_scoring_preprocessing \
+            --experiment-name "Credit-Scoring-CI"
+
+      - name: Get latest MLflow run_id
+        run: |
+          cd MLProject
+          if [ -f latest_run_id.txt ]; then
+            RUN_ID=$(cat latest_run_id.txt)
+            echo "Latest MLflow run_id: $RUN_ID"
+            echo "MLFLOW_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          fi
+
+      - name: Install Python dependencies for artifact upload
+        run: pip install requests
+
+      - name: Upload to Google Drive
+        # Ganti dengan metode penyimpanan pilihan Anda:
+        # "Upload to GitHub" atau "Upload to GitHub LFS"
+        # Contoh di bawah menggunakan GitHub artifact (actions/upload-artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-artifacts-${{ github.run_number }}
+          path: |
+            MLProject/mlruns/
+            MLProject/training_confusion_matrix.png
+            MLProject/metric_info.json
+            MLProject/latest_run_id.txt
+          retention-days: 30
+
+      # ── Docker (Advanced) ────────────────────────────────────
+      - name: Build Docker Model
+        run: |
+          cd MLProject
+          if [ -f latest_run_id.txt ]; then
+            RUN_ID=$(cat latest_run_id.txt)
+            echo "Building Docker image for run: $RUN_ID"
+            mlflow models build-docker \
+              --model-uri "runs:/$RUN_ID/model" \
+              --name "credit-scoring-model" \
+              --enable-mlserver
+          else
+            echo "No run_id found, skipping Docker build"
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Tag Docker Image
+        run: |
+          docker tag credit-scoring-model \
+            ${{ secrets.DOCKER_USERNAME }}/credit-scoring-model:latest
+          docker tag credit-scoring-model \
+            ${{ secrets.DOCKER_USERNAME }}/credit-scoring-model:${{ github.run_number }}
+
+      - name: Push Docker Image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/credit-scoring-model:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/credit-scoring-model:${{ github.run_number }}
+
+      - name: Post Log in to Docker Hub
+        if: always()
+        run: docker logout
+
+      - name: Post Set up Python 3.12.7
+        if: always()
+        run: echo "Cleanup done"
+
+      - name: Post Run actions/checkout@v3
+        if: always()
+        run: echo "Post checkout done"
+
+      - name: Complete job
+        run: |
+          echo "======================================"
+          echo "✅ CI Pipeline selesai!"
+          echo "   Run number : ${{ github.run_number }}"
+          echo "   Commit      : ${{ github.sha }}"
+          echo "======================================"
